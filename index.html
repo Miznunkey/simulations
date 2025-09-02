@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Physics Simulations</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 0;
+      background: #f5f7fa;
+      color: #333;
+    }
+    header {
+      background: #2c3e50;
+      color: white;
+      padding: 1rem;
+      text-align: center;
+    }
+    h1 {
+      margin: 0;
+    }
+    .container {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      gap: 1.5rem;
+      padding: 2rem;
+    }
+    .card {
+      background: white;
+      border-radius: 12px;
+      overflow: hidden;
+      box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+      transition: transform 0.2s ease;
+    }
+    .card:hover {
+      transform: translateY(-5px);
+    }
+    .card img {
+      width: 100%;
+      height: 180px;
+      object-fit: cover;
+    }
+    .card-content {
+      padding: 1rem;
+    }
+    .card-content h2 {
+      margin: 0 0 0.5rem 0;
+      font-size: 1.3rem;
+    }
+    .card-content p {
+      font-size: 0.95rem;
+      margin-bottom: 1rem;
+    }
+    .card-content a {
+      text-decoration: none;
+      color: #fff;
+      background: #3498db;
+      padding: 0.5rem 1rem;
+      border-radius: 6px;
+      font-size: 0.9rem;
+    }
+    .card-content a:hover {
+      background: #2980b9;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>My Physics Simulations</h1>
+    <p>Explore interactive experiments below</p>
+  </header>
+
+  <main class="container">
+
+    <!-- Dragon Curve -->
+    <div class="card">
+      <img src="dragon_curve_screenshot.jpg" alt="Dragon Curve Simulation">
+      <div class="card-content">
+        <h2>Dragon Curve Simulator</h2>
+        <p>Watch a dragon curve fractal unfold with adjustable angles and presets.</p>
+        <a href="dragon_curve_simulator_25-09-01-2.html">Launch Simulation</a>
+      </div>
+    </div>
+
+    <!-- Solar System -->
+    <div class="card">
+      <img src="solar_system_screenshot.jpg" alt="Solar System Simulation">
+      <div class="card-content">
+        <h2>Solar System Simulator</h2>
+        <p>Explore planets orbiting a star with adjustable gravity and zoom.</p>
+        <a href="solar_system_simulator_25-09-01-2.html">Launch Simulation</a>
+      </div>
+    </div>
+
+  </main>
+</body>
+</html>
