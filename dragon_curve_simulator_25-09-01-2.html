@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Universal Curve Lab – Simultaneous Wire Folding</title>
+<style>
+  :root{ --bg:#0b0e13; --panel:#141a22; --ink:#e8eef9; --muted:#a9b4c7; --accent:#6cc0ff; }
+  html,body{height:100%; margin:0; font-family: ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,"Helvetica Neue",Arial; color:var(--ink); background:linear-gradient(180deg,#0a0d12,#0e131a 40%, #0a0f17);}  
+  .wrap{display:grid; grid-template-rows:auto 1fr auto; height:100%;}
+  header{display:flex; gap:.6rem; align-items:center; padding:10px 12px; background:var(--panel); border-bottom:1px solid #1e2632;}
+  header h1{font-size:1rem; margin:0 .5rem 0 0; font-weight:600; letter-spacing:.2px}
+  .sep{flex:1}
+  .btn{appearance:none; border:1px solid #223042; background:#101722; color:var(--ink); padding:6px 10px; border-radius:10px; cursor:pointer; font-weight:600}
+  .btn:hover{border-color:#2c425a}
+  .btn.toggle[aria-pressed="true"]{background:#132132; border-color:#365a7f}
+  .ctrl{display:flex; align-items:center; gap:8px; background:#0f141c; border:1px solid #1d2734; border-radius:10px; padding:6px 8px}
+  .ctrl label{font-size:.85rem; color:var(--muted)}
+  .ctrl input[type=range]{width:160px}
+  .ctrl output{min-width:3ch; text-align:right; font-variant-numeric: tabular-nums}
+  .ctrl select, .ctrl input[type=number]{background:#0f141c; color:var(--ink); border:1px solid #1d2734; border-radius:8px; padding:4px 6px}
+  .canvaswrap{position:relative}
+  canvas{display:block; width:100%; height:100%;}
+  .hud{position:absolute; left:10px; top:10px; background:rgba(0,0,0,.42); border:1px solid rgba(255,255,255,.08); padding:6px 10px; border-radius:10px; font-size:.85rem; color:#d8e5f7; backdrop-filter: blur(6px)}
+  footer{display:flex; gap:12px; align-items:center; padding:8px 12px; background:var(--panel); border-top:1px solid #1e2632;}
+  footer .credit{color:var(--muted); font-size:.82rem}
+  footer .test{margin-left:auto; font-size:.8rem}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Universal Curve Lab • Simultaneous Wire Folding</h1>
+    <button id="playBack" class="btn">⟵ Play</button>
+    <button id="pause" class="btn">⏸ Pause</button>
+    <button id="playFwd" class="btn">Play ⟶</button>
+    <button id="stepBack" class="btn" title="Go to previous depth instantly">Depth −</button>
+    <button id="stepFwd" class="btn" title="Go to next depth and fold">Depth +</button>
+    <button id="reset" class="btn" title="Reset to depth 0">Reset</button>
+
+    <div class="sep"></div>
+
+    <div class="ctrl">
+      <label for="preset">preset</label>
+      <select id="preset">
+        <option value="dragon">Dragon (90°)</option>
+        <option value="levy">Lévy C (45°)</option>
+        <option value="sierpinski">Sierpiński Arrowhead (60°)</option>
+        <option value="hilbert">Hilbert (90°)</option>
+        <option value="koch">Koch Curve (60°)</option>
+        <option value="terdragon">Terdragon (120°)</option>
+        <option value="gosper">Gosper (60°)</option>
+        <option value="custom">Custom</option>
+      </select>
+    </div>
+
+    <div class="ctrl">
+      <label for="angle">angle</label>
+      <input id="angle" type="range" min="15" max="150" step="1" value="90">
+      <output id="angleOut">90°</output>
+    </div>
+    <div class="ctrl" id="angleCustomWrap" style="display:none">
+      <label for="angleDeg">angle°</label>
+      <input id="angleDeg" type="number" min="1" max="179" step="1" value="90" style="width:4.5rem">
+    </div>
+
+    <div class="ctrl">
+      <label for="speed">speed</label>
+      <input id="speed" type="range" min="0.05" max="5" step="0.05" value="1">
+      <output id="speedOut">1.00×</output>
+    </div>
+    <div class="ctrl">
+      <label for="depth">depth</label>
+      <input id="depth" type="range" min="0" max="16" value="0" step="1">
+      <output id="depthOut">0</output>
+    </div>
+    <div class="ctrl">
+      <label for="maxDepth">max</label>
+      <input id="maxDepth" type="number" min="1" max="20" value="16" style="width:4.5rem">
+    </div>
+    <button id="orient" class="btn toggle" aria-pressed="true" title="Toggle rotation orientation (CW/CCW)">Rotate: CW</button>
+  </header>
+
+  <div class="canvaswrap">
+    <canvas id="cv"></canvas>
+    <div class="hud" id="hud">Depth: 0 • Segments: 1 • Progress: 100% • Angle: 90°</div>
+  </div>
+
+  <footer>
+    <div class="credit">Ends locked horizontally; choose a preset or use <em>Custom</em>. Angle slider morphs the target curve; all hinges rotate together.</div>
+    <div class="test" id="testStatus">Self-tests: not run</div>
+  </footer>
+</div>
+
+<script>
+(function(){
+  // ---------- Canvas ----------
+  const canvas = document.getElementById('cv');
+  const ctx = canvas.getContext('2d');
+  const hud = document.getElementById('hud');
+
+  function resize(){
+    const dpr = Math.max(1, window.devicePixelRatio || 1);
+    const w = canvas.clientWidth;
+    const h = window.innerHeight - document.querySelector('header').offsetHeight - document.querySelector('footer').offsetHeight;
+    canvas.style.height = h + 'px';
+    canvas.width = Math.floor(w * dpr);
+    canvas.height = Math.floor(h * dpr);
+    ctx.setTransform(1,0,0,1,0,0);
+  }
+  window.addEventListener('resize', resize, {passive:true});
+  window.addEventListener('load', resize);
+
+  // ---------- Controls ----------
+  const q = (id)=>document.getElementById(id);
+  const playFwdBtn = q('playFwd');
+  const playBackBtn = q('playBack');
+  const pauseBtn   = q('pause');
+  const stepFwdBtn = q('stepFwd');
+  const stepBackBtn= q('stepBack');
+  const resetBtn   = q('reset');
+  const speedSlider= q('speed');
+  const speedOut   = q('speedOut');
+  const depthSlider= q('depth');
+  const depthOut   = q('depthOut');
+  const maxDepthInput = q('maxDepth');
+  const orientBtn  = q('orient');
+  const presetSel  = q('preset');
+  const angleSlider= q('angle');
+  const angleOut   = q('angleOut');
+  const angleDegIn = q('angleDeg');
+  const angleCustomWrap = q('angleCustomWrap');
+  const testStatus = q('testStatus');
+
+  // ---------- Presets ----------
+  const PRESETS = {
+    dragon:   { name:'Dragon',    angle:90, draw:"F", axiom:"FX", rules:{ X:"X+YF+", Y:"-FX-Y" }, maxDepth:16 },
+    levy:     { name:'Lévy C',    angle:45, draw:"F", axiom:"F",  rules:{ F:"+F--F+" }, maxDepth:14 },
+    sierpinski:{name:'Sierpinski',angle:60, draw:"AB",axiom:"A",  rules:{ A:"B-A-B", B:"A+B+A" }, maxDepth:12 },
+    hilbert:  { name:'Hilbert',   angle:90, draw:"F", axiom:"A",  rules:{ A:"+BF-AFA-FB+", B:"-AF+BFB+FA-" }, maxDepth:6 },
+    koch:     { name:'Koch',      angle:60, draw:"F", axiom:"F",  rules:{ F:"F+F--F+F" }, maxDepth:6 },
+    terdragon:{ name:'Terdragon', angle:120,draw:"F", axiom:"F",  rules:{ F:"F+F-F" }, maxDepth:7 },
+    gosper:   { name:'Gosper',    angle:60, draw:"AB",axiom:"A",  rules:{ A:"A+BF++BF-FA--FAFA-BF+", B:"-FA+BFBB++BF+FA--FA-BF" }, maxDepth:4 },
+    custom:   { name:'Custom',    angle:90, draw:"F", axiom:"FX", rules:{ X:"X+YF+", Y:"-FX-Y" }, maxDepth:12 }
+  };
+
+  // ---------- State ----------
+  let preset = 'dragon';
+  let maxDepth = PRESETS[preset].maxDepth;
+  let depth = 0;
+  let cw = true;            // orientation: true=CW, false=CCW
+  let playing = 0;          // -1 unfolding, 0 paused, +1 folding
+  let speed = 1.0;          // folds per second (progress per second)
+  let u = 1;                // progress in [0,1]
+  let angleDeg = PRESETS[preset].angle;
+
+  function updateSpeedLabel(){ speedOut.textContent = speed.toFixed(2)+'×'; }
+  function updateAngleLabel(){ angleOut.textContent = Math.round(angleDeg)+'°'; }
+
+  // ---------- L-system engine ----------
+  function deriveL(depth, axiom, rules){
+    let s = axiom;
+    for (let i=0;i<depth;i++){
+      let t="";
+      for (let k=0;k<s.length;k++){
+        const ch = s[k];
+        t += (rules[ch] !== undefined ? rules[ch] : ch);
+      }
+      s = t;
+    }
+    return s;
+  }
+
+  function buildPolylineFromL(depth, u, cw, angleDeg, spec){
+    const s = deriveL(depth, spec.axiom, spec.rules);
+    const drawSet = new Set(spec.draw.split(""));
+    const angleSign = cw ? +1 : -1;
+    const a = (angleDeg * Math.PI / 180) * angleSign;
+    let ang = 0;
+    const pts = [];
+    let x=0, y=0; pts.push({x,y});
+    for (let i=0;i<s.length;i++){
+      const ch = s[i];
+      if (ch === '+') ang += a * u;
+      else if (ch === '-') ang -= a * u;
+      else if (drawSet.has(ch) || ch === 'F' || ch === 'G'){
+        x += Math.cos(ang);
+        y += Math.sin(ang);
+        pts.push({x,y});
+      }
+      // ignore other symbols
+    }
+    return pts;
+  }
+
+  // Rotate so that endpoints lie on a horizontal line (no spin)
+  function alignHorizontal(pts){
+    const a = pts[0];
+    const b = pts[pts.length-1];
+    const dx = b.x - a.x, dy = b.y - a.y;
+    const ang = Math.atan2(dy, dx);
+    if (Math.abs(ang) < 1e-12) return pts.slice();
+    const ca = Math.cos(ang), sa = Math.sin(ang);
+    const out = new Array(pts.length);
+    for (let i=0;i<pts.length;i++){
+      const xx = pts[i].x - a.x, yy = pts[i].y - a.y;
+      const xr =  xx*ca + yy*sa;  // rotate by -ang
+      const yr = -xx*sa + yy*ca;
+      out[i] = {x:xr + a.x, y:yr + a.y};
+    }
+    return out;
+  }
+
+  function getBounds(pts){
+    let minx=Infinity,miny=Infinity,maxx=-Infinity,maxy=-Infinity;
+    for (const p of pts){ if(p.x<minx)minx=p.x; if(p.x>maxx)maxx=p.x; if(p.y<miny)miny=p.y; if(p.y>maxy)maxy=p.y; }
+    return {minx,miny,maxx,maxy,w:maxx-minx,h:maxy-miny};
+  }
+
+  function draw(){
+    const spec = PRESETS[preset];
+    let pts = buildPolylineFromL(depth, u, cw, angleDeg, spec);
+    pts = alignHorizontal(pts); // keep endpoints horizontal
+
+    const dpr = Math.max(1, window.devicePixelRatio || 1);
+    const W = canvas.width, H = canvas.height;
+    ctx.setTransform(1,0,0,1,0,0);
+    ctx.clearRect(0,0,W,H);
+    const b = getBounds(pts);
+    const pad = 30 * dpr;
+    const sw = Math.max(1e-9, b.w), sh = Math.max(1e-9, b.h);
+    const scale = Math.min((W-2*pad)/sw, (H-2*pad)/sh);
+    const tx = (W - scale*(b.minx + b.maxx)) / 2;
+    const ty = (H - scale*(b.miny + b.maxy)) / 2;
+    ctx.setTransform(scale,0,0,scale,tx,ty);
+
+    // razor-thin lines in device pixels
+    ctx.lineJoin='round'; ctx.lineCap='round';
+    ctx.strokeStyle='#9dd1ff';
+    ctx.shadowColor='rgba(0,0,0,0)';
+    ctx.shadowBlur = 0;
+    const THIN_PX = 0.75;
+    ctx.lineWidth = THIN_PX / Math.max(scale, 1e-9);
+
+    ctx.beginPath();
+    ctx.moveTo(pts[0].x, pts[0].y);
+    for (let i=1;i<pts.length;i++) ctx.lineTo(pts[i].x, pts[i].y);
+    ctx.stroke();
+
+    const segs = pts.length - 1;
+    hud.textContent = `Preset: ${spec.name} • Depth: ${depth} • Segments: ${segs} • Progress: ${(u*100).toFixed(0)}% • Angle: ${Math.round(angleDeg)}°`;
+  }
+
+  // ---------- Interaction ----------
+  function setPlaying(dir){
+    playing = dir;
+    playFwdBtn.classList.toggle('toggle', dir===+1);
+    playFwdBtn.setAttribute('aria-pressed', String(dir===+1));
+    playBackBtn.classList.toggle('toggle', dir===-1);
+    playBackBtn.setAttribute('aria-pressed', String(dir===-1));
+  }
+
+  playFwdBtn.onclick = ()=> setPlaying( playing===+1 ? 0 : +1 );
+  playBackBtn.onclick = ()=> setPlaying( playing===-1 ? 0 : -1 );
+  pauseBtn.onclick = ()=> setPlaying(0);
+
+  stepFwdBtn.onclick = ()=>{
+    if (depth < maxDepth){ depth++; depthSlider.value=String(depth); depthOut.value=String(depth); u=0; setPlaying(+1); }
+  };
+  stepBackBtn.onclick = ()=>{
+    if (depth > 0){ depth--; depthSlider.value=String(depth); depthOut.value=String(depth); u=1; setPlaying(0); draw(); }
+  };
+
+  resetBtn.onclick = ()=>{ setPlaying(0); depth=0; depthSlider.value='0'; depthOut.value='0'; u=1; draw(); };
+
+  depthSlider.oninput = ()=>{ depth = Math.max(0, Math.min(maxDepth, parseInt(depthSlider.value,10)||0)); depthOut.value=String(depth); draw(); };
+
+  maxDepthInput.onchange = ()=>{
+    maxDepth = Math.max(1, Math.min(20, parseInt(maxDepthInput.value,10)||16));
+    maxDepthInput.value = String(maxDepth);
+    depthSlider.max = String(maxDepth);
+    if (depth > maxDepth){ depth = maxDepth; depthSlider.value=String(depth); depthOut.value=String(depth); }
+    draw();
+  };
+
+  orientBtn.onclick = ()=>{ cw = !cw; orientBtn.textContent = 'Rotate: ' + (cw? 'CW':'CCW'); orientBtn.setAttribute('aria-pressed', String(cw)); draw(); };
+
+  speedSlider.oninput = ()=>{ speed = Math.max(0.05, parseFloat(speedSlider.value)||0.5); speedOut.textContent = speed.toFixed(2)+'×'; };
+
+  angleSlider.oninput = ()=>{ angleDeg = parseFloat(angleSlider.value)||90; angleDegIn.value = String(Math.round(angleDeg)); updateAngleLabel(); draw(); };
+  angleDegIn.onchange = ()=>{
+    let v = parseFloat(angleDegIn.value)||90; v = Math.max(1, Math.min(179, v));
+    angleDeg = v; angleSlider.value = String(Math.round(v)); updateAngleLabel(); draw();
+  };
+
+  presetSel.onchange = ()=>{
+    preset = presetSel.value;
+    const spec = PRESETS[preset];
+    // set angle to preset default (but keep previous if custom)
+    if (preset !== 'custom'){
+      angleDeg = spec.angle; angleSlider.value = String(spec.angle); angleDegIn.value = String(spec.angle);
+      angleCustomWrap.style.display = 'none';
+    } else {
+      angleCustomWrap.style.display = '';
+    }
+    updateAngleLabel();
+
+    // reset depth limits
+    maxDepth = spec.maxDepth;
+    maxDepthInput.value = String(maxDepth);
+    depthSlider.max = String(maxDepth);
+    if (depth > maxDepth){ depth = maxDepth; depthSlider.value=String(depth); depthOut.value=String(depth); }
+
+    // reset animation progress to fully folded for current depth
+    u = 1; setPlaying(0);
+    draw();
+  };
+
+  // ---------- Main loop ----------
+  let last = performance.now();
+  function tick(now){
+    const dt = Math.min(0.05, Math.max(0, (now - last) / 1000));
+    last = now;
+
+    if (playing !== 0){
+      u += playing * speed * dt;
+      if (u <= 0){ u = 0; setPlaying(0); }
+      if (u >= 1){ u = 1; setPlaying(0); }
+      draw();
+    }
+    requestAnimationFrame(tick);
+  }
+
+  // ---------- Self-tests ----------
+  function approx(a,b,eps=1e-8){ return Math.abs(a-b) <= eps; }
+  function countStepsFromL(depth, spec){
+    const s = deriveL(depth, spec.axiom, spec.rules);
+    const drawSet = new Set(spec.draw.split(""));
+    let c=0; for (const ch of s) if (drawSet.has(ch) || ch==='F' || ch==='G') c++; return c;
+  }
+  function runSelfTests(){
+    try{
+      // Dragon: steps should be 2^d
+      for (let d=0; d<=12; d++){
+        const steps = countStepsFromL(d, PRESETS.dragon);
+        if (steps !== (1<<d)) throw new Error(`dragon steps mismatch d=${d}: got ${steps}`);
+      }
+      // u=0 must be straight line along +x for several presets
+      for (const key of ['dragon','levy','sierpinski','koch','terdragon']){
+        for (let d=0; d<=6; d++){
+          const pts = buildPolylineFromL(d, 0, true, PRESETS[key].angle, PRESETS[key]);
+          const end = pts[pts.length-1];
+          if (!approx(end.y, 0, 1e-8)) throw new Error(`u=0 not horizontal for ${key}, d=${d}`);
+        }
+      }
+      // alignment test
+      for (let d=1; d<=6; d++){
+        const pts0 = buildPolylineFromL(d, 0.6, true, 90, PRESETS.dragon);
+        const ptsA = alignHorizontal(pts0);
+        if (!approx(ptsA[0].y, ptsA[ptsA.length-1].y, 1e-6)) throw new Error('alignment failed');
+      }
+      testStatus.textContent = 'Self-tests: PASS';
+      testStatus.style.color = '#86efac';
+    }catch(e){
+      console.error(e);
+      testStatus.textContent = 'Self-tests: FAIL – ' + e.message;
+      testStatus.style.color = '#fca5a5';
+    }
+  }
+
+  // ---------- Init ----------
+  resize();
+  updateSpeedLabel();
+  updateAngleLabel();
+  draw();
+  runSelfTests();
+  requestAnimationFrame(tick);
+})();
+</script>
+</body>
+</html>
