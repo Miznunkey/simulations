@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Double Pendulum Lab (Corrected Physics)</title>
+  <style>
+    :root{ --bg:#0b0f14; --panel:#0f1620; --muted:#8aa0b5; --hi:#4dd0e1; --hi2:#ffd166 }
+    html,body{height:100%;margin:0;background:var(--bg);color:#e6edf3;font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Cantarell,Noto Sans,sans-serif}
+    .wrap{display:grid;grid-template-columns:320px 1fr;height:100vh}
+    .panel{background:var(--panel);padding:14px;overflow:auto;border-right:1px solid #132131}
+    h1{font-size:18px;margin:0 0 8px}
+    h2{font-size:12px;margin:14px 0 6px;color:var(--muted);letter-spacing:.08em;text-transform:uppercase}
+    .row{display:flex;align-items:center;gap:8px;margin:6px 0}
+    .row label{flex:1}
+    .row input[type="range"]{flex:2}
+    .row input[type="number"]{width:80px;background:#0b1118;color:#e6edf3;border:1px solid #24384b;border-radius:6px;padding:6px}
+    .row input[type="checkbox"]{transform:scale(1.1)}
+    canvas{width:100%;height:100%;display:block;background:linear-gradient(#0b0f14,#0d1218)}
+    .btn{appearance:none;background:#173047;color:#e6edf3;border:1px solid #284764;border-radius:10px;padding:8px 10px;font-weight:600;cursor:pointer;margin-right:6px}
+    .btn:hover{filter:brightness(1.15)}
+    .kpi{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:8px}
+    .kpi div{background:#0e1722;border:1px solid #142234;padding:8px;border-radius:8px}
+    .kpi b{display:block;color:#b7c8d8;margin-bottom:4px}
+    .legend{font-size:12px;color:#9ab;margin-bottom:8px}
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <div class="panel">
+    <h1>Double Pendulum</h1>
+    <div class="legend">Drag a bob to set its position while paused. Hit <b>Play</b> to release from rest. Toggle the trail to see the bottom bob's path (it fades over time).</div>
+
+    <h2>Initial Conditions</h2>
+    <div class="row"><label>θ₁ (deg)</label><input id="theta1" type="range" min="-179" max="179" value="120"><input id="theta1n" type="number" step="1"></div>
+    <div class="row"><label>θ₂ (deg)</label><input id="theta2" type="range" min="-179" max="179" value="-10"><input id="theta2n" type="number" step="1"></div>
+    <div class="row"><label>ω₁ (deg/s)</label><input id="omega1" type="range" min="-720" max="720" value="0"><input id="omega1n" type="number" step="1"></div>
+    <div class="row"><label>ω₂ (deg/s)</label><input id="omega2" type="range" min="-720" max="720" value="0"><input id="omega2n" type="number" step="1"></div>
+
+    <h2>System</h2>
+    <div class="row"><label>L₁ (px)</label><input id="L1" type="range" min="40" max="400" value="250"><input id="L1n" type="number" step="1"></div>
+    <div class="row"><label>L₂ (px)</label><input id="L2" type="range" min="40" max="400" value="100"><input id="L2n" type="number" step="1"></div>
+    <div class="row"><label>m₁ (kg)</label><input id="m1" type="range" min="1" max="20" value="10"><input id="m1n" type="number" step="1"></div>
+    <div class="row"><label>m₂ (kg)</label><input id="m2" type="range" min="1" max="20" value="10"><input id="m2n" type="number" step="1"></div>
+    <div class="row"><label>g (m/s²)</label><input id="g" type="range" min="0" max="30" value="9.81" step="0.01"><input id="gn" type="number" step="0.01"></div>
+    <div class="row"><label>Damping</label><input id="damp" type="range" min="0" max="0.05" value="0.001" step="0.001"><input id="dampn" type="number" step="0.001"></div>
+
+    <h2>Playback</h2>
+    <div class="row"><label>Time scale (speed)</label><input id="timescale" type="range" min="0.25" max="4" step="0.25" value="2.5"><input id="timescalen" type="number" step="0.25"></div>
+    <div class="row"><label>Integrator substeps</label><input id="substeps" type="range" min="1" max="16" step="1" value="8"><input id="substepsn" type="number" step="1"></div>
+
+    <h2>Trail</h2>
+    <div class="row"><label>Show trail</label><input id="showTrail" type="checkbox" checked></div>
+    <div class="row"><label>Trail length (s)</label><input id="trailLength" type="range" min="1" max="30" value="10" step="1"><input id="trailLengthn" type="number" step="1"></div>
+    <div class="row"><label>Trail width (px)</label><input id="trailWidth" type="range" min="1" max="6" value="2" step="1"><input id="trailWidthn" type="number" step="1"></div>
+
+    <div style="margin-top:8px">
+      <button class="btn" id="playPause">⏸️ Pause</button>
+      <button class="btn" id="reset">🔁 Reset</button>
+      <button class="btn" id="randomize">🎲 Randomize</button>
+      <button class="btn" id="clearTrail">🧹 Clear Trail</button>
+      <button class="btn" id="smallAngle">📐 Small‑angle test</button>
+    </div>
+
+    <div class="kpi">
+      <div><b>Total Energy</b><span id="energy">—</span></div>
+      <div><b>Sim dt</b><span id="dtDisp">—</span></div>
+    </div>
+  </div>
+  <canvas id="view"></canvas>
+</div>
+
+<script>
+// ===== Utilities =====
+const clamp=(x,a,b)=>Math.max(a,Math.min(b,x));
+const rad=d=>d*Math.PI/180; const deg=r=>r*180/Math.PI;
+
+// ===== Canvas =====
+const canvas=document.getElementById('view');
+const ctx=canvas.getContext('2d');
+function resize(){ const dpr=window.devicePixelRatio||1; const rect=canvas.getBoundingClientRect(); canvas.width=rect.width*dpr; canvas.height=rect.height*dpr; ctx.setTransform(dpr,0,0,dpr,0,0);} resize(); window.addEventListener('resize',resize);
+
+// ===== State =====
+const state={
+  L1:250, L2:100,
+  m1:10, m2:10,
+  g:9.81,
+  damp:0.001,
+  theta1:rad(120), theta2:rad(-10),
+  omega1:0, omega2:0,
+  pivot:{x:window.innerWidth*0.35, y:window.innerHeight*0.25},
+  playing:true,
+  timescale:2.5,
+  substeps:8,
+  showTrail:true,
+  trailLength:10,
+  trailWidth:2,
+  t:0,
+};
+
+// ===== Bindings =====
+function bindScalar(rangeId,numId,key){ const r=document.getElementById(rangeId), n=document.getElementById(numId); function sync(){ r.value=state[key]; n.value=state[key]; } r.addEventListener('input',e=>{ state[key]=parseFloat(e.target.value); n.value=r.value; }); n.addEventListener('input',e=>{ state[key]=parseFloat(e.target.value); r.value=n.value; }); sync(); }
+function bindAngle(rangeId,numId,key){ const r=document.getElementById(rangeId), n=document.getElementById(numId); function sync(){ const d=deg(state[key]); r.value=d; n.value=Math.round(d); } r.addEventListener('input',e=>{ const d=parseFloat(e.target.value); state[key]=rad(d); n.value=d; }); n.addEventListener('input',e=>{ const d=parseFloat(e.target.value); state[key]=rad(d); r.value=d; }); sync(); }
+function bindOmega(rangeId,numId,key){ const r=document.getElementById(rangeId), n=document.getElementById(numId); function sync(){ const d=deg(state[key]); r.value=d; n.value=Math.round(d); } r.addEventListener('input',e=>{ const d=parseFloat(e.target.value); state[key]=rad(d); n.value=d; }); n.addEventListener('input',e=>{ const d=parseFloat(e.target.value); state[key]=rad(d); r.value=d; }); sync(); }
+
+bindAngle('theta1','theta1n','theta1');
+bindAngle('theta2','theta2n','theta2');
+bindOmega('omega1','omega1n','omega1');
+bindOmega('omega2','omega2n','omega2');
+bindScalar('L1','L1n','L1');
+bindScalar('L2','L2n','L2');
+bindScalar('m1','m1n','m1');
+bindScalar('m2','m2n','m2');
+bindScalar('g','gn','g');
+bindScalar('damp','dampn','damp');
+bindScalar('timescale','timescalen','timescale');
+bindScalar('substeps','substepsn','substeps');
+bindScalar('trailLength','trailLengthn','trailLength');
+bindScalar('trailWidth','trailWidthn','trailWidth');
+document.getElementById('showTrail').addEventListener('change',e=>{state.showTrail=e.target.checked});
+
+// ===== Controls =====
+const btnPlay=document.getElementById('playPause');
+const btnReset=document.getElementById('reset');
+const btnRand=document.getElementById('randomize');
+const btnClear=document.getElementById('clearTrail');
+const btnSmall=document.getElementById('smallAngle');
+
+btnPlay.onclick=()=>{
+  const wasPlaying = state.playing;
+  state.playing = !state.playing;
+  btnPlay.textContent = state.playing ? '⏸️ Pause' : '▶️ Play';
+  if (state.playing && !wasPlaying) {
+    // Release from rest when starting
+    state.omega1 = 0; state.omega2 = 0;
+  }
+};
+btnReset.onclick=()=>{ reset(); };
+btnRand.onclick=()=>{ randomize(); };
+btnClear.onclick=()=>{ trail.length=0; };
+btnSmall.onclick=()=>{ state.theta1=rad(10); state.theta2=rad(0); state.omega1=0; state.omega2=0; trail.length=0; };
+
+function reset(){
+  state.theta1=rad(parseFloat(document.getElementById('theta1').value));
+  state.theta2=rad(parseFloat(document.getElementById('theta2').value));
+  state.omega1=rad(parseFloat(document.getElementById('omega1').value));
+  state.omega2=rad(parseFloat(document.getElementById('omega2').value));
+  state.t=0; trail.length=0;
+}
+function randomize(){
+  const d1=(Math.random()*360)-180; const d2=(Math.random()*360)-180; const w1=(Math.random()*720)-360; const w2=(Math.random()*720)-360;
+  state.theta1=rad(d1); state.theta2=rad(d2); state.omega1=rad(w1); state.omega2=rad(w2);
+  document.getElementById('theta1').value=d1; document.getElementById('theta1n').value=d1;
+  document.getElementById('theta2').value=d2; document.getElementById('theta2n').value=d2;
+  document.getElementById('omega1').value=w1; document.getElementById('omega1n').value=w1;
+  document.getElementById('omega2').value=w2; document.getElementById('omega2n').value=w2;
+}
+
+// ===== Physics (standard double‑pendulum) =====
+function deriv(y){
+  // y = [th1, w1, th2, w2]  (angles in rad, angular rates in rad/s)
+  const [th1,w1,th2,w2]=y;
+  const {m1,m2,L1,L2,g,damp}=state;
+  const d = th1 - th2; const s=Math.sin(d); const c=Math.cos(d);
+  const denom1 = L1 * (2*m1 + m2 - m2 * Math.cos(2*d));
+  const num1 = -g*(2*m1+m2)*Math.sin(th1)
+             - m2*g*Math.sin(th1-2*th2)
+             - 2*m2*s*( w2*w2*L2 + w1*w1*L1*c );
+  const a1 = num1/denom1 - damp*w1;
+  const denom2 = L2 * (2*m1 + m2 - m2 * Math.cos(2*d));
+  const num2 = 2*s*( w1*w1*L1*(m1+m2) + g*(m1+m2)*Math.cos(th1) + w2*w2*L2*m2*c );
+  const a2 = num2/denom2 - damp*w2;
+  return [w1,a1,w2,a2];
+}
+
+function rk4Step(y,h){ const k1=deriv(y); const y2=y.map((v,i)=>v+0.5*h*k1[i]); const k2=deriv(y2); const y3=y.map((v,i)=>v+0.5*h*k2[i]); const k3=deriv(y3); const y4=y.map((v,i)=>v+h*k3[i]); const k4=deriv(y4); return y.map((v,i)=> v + (h/6)*(k1[i]+2*k2[i]+2*k3[i]+k4[i])); }
+
+// ===== Trail =====
+const trail=[]; // {x,y,t}
+function pushTrail(x,y,t){ trail.push({x,y,t}); const cutoff=t - state.trailLength - 1; while(trail.length && trail[0].t<cutoff) trail.shift(); }
+
+// ===== Drag & Fling =====
+let dragging=null; let lastAngles=[];
+canvas.addEventListener('pointerdown',e=>{
+  const p=pointerPos(e); const {x1,y1,x2,y2}=bobPositions(); const r=18;
+  if(dist(p.x,p.y,x2,y2)<r) dragging='bob2'; else if(dist(p.x,p.y,x1,y1)<r) dragging='bob1';
+  if(dragging){ canvas.setPointerCapture(e.pointerId); lastAngles.length=0; sampleAngle(); state.playing=false; btnPlay.textContent='▶️ Play'; }
+});
+canvas.addEventListener('pointermove',e=>{
+  if(!dragging) return; const p=pointerPos(e); const {x:pivx,y:pivy}=state.pivot;
+  if(dragging==='bob1') state.theta1=Math.atan2(p.y-pivy, p.x-pivx) - Math.PI/2;
+  else { const {x1,y1}=bobPositions(); state.theta2=Math.atan2(p.y-y1, p.x-x1) - Math.PI/2; }
+  sampleAngle();
+});
+canvas.addEventListener('pointerup',e=>{
+  if(!dragging) return;
+  // No flick: release from rest
+  state.omega1 = 0; state.omega2 = 0;
+  dragging = null; lastAngles.length = 0; canvas.releasePointerCapture(e.pointerId);
+});
+function sampleAngle(){ const {theta1,theta2}=state; lastAngles.push({th1:theta1,th2:theta2,t:performance.now()/1000}); if(lastAngles.length>6) lastAngles.shift(); }
+function pointerPos(e){ const r=canvas.getBoundingClientRect(); return {x:(e.clientX-r.left), y:(e.clientY-r.top)}; }
+function angleDiff(a,b){ let d=a-b; while(d>Math.PI) d-=2*Math.PI; while(d<-Math.PI) d+=2*Math.PI; return d; }
+function dist(x1,y1,x2,y2){ return Math.hypot(x2-x1,y2-y1); }
+
+// ===== Rendering =====
+function bobPositions(){ const {pivot,L1,L2,theta1,theta2}=state; const x1=pivot.x + L1*Math.sin(theta1); const y1=pivot.y + L1*Math.cos(theta1); const x2=x1 + L2*Math.sin(theta2); const y2=y1 + L2*Math.cos(theta2); return {x1,y1,x2,y2}; }
+function draw(){ const w=canvas.clientWidth, h=canvas.clientHeight; ctx.clearRect(0,0,w,h);
+  // pivot crosshair
+  ctx.save(); ctx.translate(0.5,0.5); ctx.strokeStyle='#1d3246'; ctx.lineWidth=1; ctx.beginPath(); ctx.moveTo(state.pivot.x-8,state.pivot.y); ctx.lineTo(state.pivot.x+8,state.pivot.y); ctx.moveTo(state.pivot.x,state.pivot.y-8); ctx.lineTo(state.pivot.x,state.pivot.y+8); ctx.stroke(); ctx.restore();
+  const {x1,y1,x2,y2}=bobPositions();
+  // trail
+  if(state.showTrail){ const now=state.t; ctx.lineWidth=state.trailWidth; ctx.lineCap='round'; for(let i=1;i<trail.length;i++){ const aAge=now-trail[i-1].t, bAge=now-trail[i].t; if(aAge>state.trailLength && bAge>state.trailLength) continue; const a=1-clamp(aAge/state.trailLength,0,1), b=1-clamp(bAge/state.trailLength,0,1); const grd=ctx.createLinearGradient(trail[i-1].x,trail[i-1].y, trail[i].x,trail[i].y); grd.addColorStop(0, `rgba(77,208,225,${a})`); grd.addColorStop(1, `rgba(255,209,102,${b})`); ctx.strokeStyle=grd; ctx.beginPath(); ctx.moveTo(trail[i-1].x,trail[i-1].y); ctx.lineTo(trail[i].x,trail[i].y); ctx.stroke(); } }
+  // rods
+  ctx.strokeStyle='#5fa8d3'; ctx.lineWidth=2.5; ctx.beginPath(); ctx.moveTo(state.pivot.x,state.pivot.y); ctx.lineTo(x1,y1); ctx.stroke(); ctx.strokeStyle='#ffd166'; ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.stroke();
+  // bobs
+  drawBob(x1,y1,state.m1,'#7dd3fc'); drawBob(x2,y2,state.m2,'#fca5a5');
+}
+function drawBob(x,y,m,color){ const r = 8 + Math.sqrt(m)*1.2; ctx.fillStyle=color; ctx.strokeStyle='#102233'; ctx.lineWidth=1.5; ctx.beginPath(); ctx.arc(x,y,r,0,Math.PI*2); ctx.fill(); ctx.stroke(); }
+
+// ===== Energy (diagnostic) =====
+function energy(){ const {m1,m2,L1,L2,g,theta1,theta2,omega1,omega2}=state; const y1=L1*Math.cos(theta1), y2=y1+L2*Math.cos(theta2); const v1sq=(L1*omega1)**2; const v2sq=v1sq + (L2*omega2)**2 + 2*L1*L2*omega1*omega2*Math.cos(theta1-theta2); const T=0.5*m1*v1sq + 0.5*m2*v2sq; const V=(m1+m2)*g*y1 + m2*g*y2; return T+V; }
+
+// ===== Main loop =====
+let last=performance.now();
+function step(){
+  const now=performance.now(); let dt=(now-last)/1000; last=now; dt=clamp(dt,0,0.05);
+  const dispDt=dt*state.timescale;
+  if(state.playing && dragging===null){
+    const sub=Math.max(1,Math.floor(state.substeps)); const h=dispDt/sub;
+    for(let i=0;i<sub;i++){
+      const y0=[state.theta1,state.omega1,state.theta2,state.omega2];
+      const y1=rk4Step(y0,h);
+      state.theta1=y1[0]; state.omega1=y1[1]; state.theta2=y1[2]; state.omega2=y1[3];
+      state.t+=h; const p=bobPositions(); pushTrail(p.x2,p.y2,state.t);
+    }
+  }
+  document.getElementById('energy').textContent=energy().toFixed(2);
+  document.getElementById('dtDisp').textContent=(dispDt).toFixed(3)+' s';
+  draw(); requestAnimationFrame(step);
+}
+requestAnimationFrame(step);
+
+// seed a short pre-trail for aesthetics
+(function seedTrail(){ const N=60; const now=0; state.t=0; const p=bobPositions(); for(let i=0;i<N;i++){ pushTrail(p.x2,p.y2, now - (N-i)/N * state.trailLength ); } })();
+</script>
+</body>
+</html>
