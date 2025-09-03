@@ -1,0 +1,706 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Gravity Simulator — Collisions + Black Holes</title>
+  <style>
+    html, body { margin: 0; padding: 0; overflow: hidden; background: #111; }
+    #ui {
+      position: absolute; top: 10px; left: 10px; z-index: 20; color: #fff; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      background: rgba(0,0,0,0.5); padding: 10px; border-radius: 10px; backdrop-filter: blur(4px);
+    }
+    #ui label { margin-right: 10px; display: inline-flex; align-items: center; gap: 6px; }
+    #ui input[type=range] { width: 120px; }
+    #ui .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+    #ui .small { opacity: 0.8; font-size: 12px; }
+    #canvas { display: block; }
+    .chip { padding: 2px 6px; border-radius: 999px; background: rgba(255,255,255,0.1); }
+
+    /* Inline edit button */
+    #editBtn {
+      position: absolute; z-index: 30; display: none; pointer-events: auto;
+      transform: translate(-50%, -50%);
+      background: #222; color: #fff; border: 1px solid #555; border-radius: 8px;
+      padding: 4px 8px; font-size: 12px; cursor: pointer;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.4);
+    }
+    #editPanel {
+      position: absolute; z-index: 31; display: none; pointer-events: auto;
+      transform: translate(-50%, 8px);
+      background: #111; color: #fff; border: 1px solid #555; border-radius: 10px;
+      padding: 8px; font-size: 12px; box-shadow: 0 6px 18px rgba(0,0,0,0.5);
+    }
+    #editPanel input { width: 120px; background:#000; color:#fff; border:1px solid #555; border-radius:6px; padding:4px; }
+    #editPanel button { margin-left: 6px; padding:4px 8px; border-radius:8px; border:1px solid #555; background:#222; color:#fff; cursor:pointer; }
+  </style>
+</head>
+<body>
+  <div id="ui">
+    <div class="row">
+      <button id="playPause">Pause</button>
+      <button id="reset">Reset</button>
+      <button id="recenter">Recenter</button>
+      <label>Mass <input id="mass" type="range" min="1" max="100" value="20"></label>
+      <label><input id="createOrbit" type="checkbox"> Create orbit</label>
+      <label><input id="showStars" type="checkbox" checked> Starfield</label>
+      <label><input id="highlightObjects" type="checkbox"> Highlight objects</label>
+    </div>
+    <div class="row small" style="margin-top:6px">
+      <label>BH Threshold (mass)
+        <input id="bhThreshold" type="range" min="200" max="4000" value="1200">
+      </label>
+      <span class="chip">Left click: add / drag • Drag length = speed (unless Create orbit) • Right-drag: pan • Wheel: zoom</span>
+    </div>
+    <div id="info" class="small" style="margin-top:6px"></div>
+  </div>
+
+  <!-- Inline edit UI -->
+  <button id="editBtn">Edit</button>
+  <div id="editPanel">
+    <div style="display:flex; align-items:center; gap:6px;">
+      <span>Mass:</span>
+      <input id="editMass" type="number" step="any" />
+      <button id="saveMass">Save</button>
+      <button id="deleteObj" style="border-color:#a33; background:#400;">Delete</button>
+    </div>
+  </div>
+
+  <canvas id="canvas"></canvas>
+
+  <script>
+    // === Config ===
+    const G = 0.1;                 // Gravitational constant (tune for stability)
+    const TRAIL_LENGTH = 80;       // Points per trail
+    const STAR_COUNT = 400;        // Background stars per layer
+    const EPS = 0.1;               // Softening to avoid singularities
+
+    // Speed control via drag-vector length
+    const SPEED_PER_PIXEL = 0.05;  // world-units of speed per pixel of drag
+    const PREVIEW_MAX_ARROW = 250; // px, visual cap for preview line
+
+    // Black hole visuals/physics
+    const BH_VIS_RADIUS = 6;       // draw radius for collapsed BH (world units)
+    const BH_COLLIDE_RADIUS = 2;   // very small capture radius (world units)
+
+    // Highlight rendering
+    const HIGHLIGHT_MIN_PX = 4;    // minimum on-screen radius when highlighting
+
+    // Picking aid (so tiny bodies are easy to grab / hover at any zoom)
+    const PICK_MIN_PX = 10;        // minimum on-screen pick radius
+
+    // Mass->Radius mapping (for non-BH): constant 2D density => r ∝ sqrt(m)
+    function radiusFromMass(m) {
+      return Math.max(1.5, Math.sqrt(m));
+    }
+
+    // === Canvas Setup ===
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    let width = window.innerWidth, height = window.innerHeight;
+    canvas.width = width; canvas.height = height;
+
+    // === UI ===
+    const playPauseBtn = document.getElementById('playPause');
+    const resetBtn = document.getElementById('reset');
+    const recenterBtn = document.getElementById('recenter');
+    const massSlider = document.getElementById('mass');
+    const bhThresholdSlider = document.getElementById('bhThreshold');
+    const createOrbitCb = document.getElementById('createOrbit');
+    const showStarsCb = document.getElementById('showStars');
+    const highlightCb = document.getElementById('highlightObjects');
+    const infoSpan = document.getElementById('info');
+
+    // Inline edit UI elements
+    const editBtn = document.getElementById('editBtn');
+    const editPanel = document.getElementById('editPanel');
+    const editMassInput = document.getElementById('editMass');
+    const saveMassBtn = document.getElementById('saveMass');
+    const deleteObjBtn = document.getElementById('deleteObj');
+
+    // Camera (zoom/pan)
+    let cam = { x: width/2, y: height/2, zoom: 1 };
+    const initialCam = { x: cam.x, y: cam.y, zoom: cam.zoom };
+
+    // === Stars Background (screen-space parallax so it extends on any zoom) ===
+    const stars = [];
+    function seedStars() {
+      stars.length = 0;
+      for (let i = 0; i < STAR_COUNT; i++) {
+        stars.push({ x: Math.random()*width, y: Math.random()*height, r: Math.random()*1.2 + 0.2, a: Math.random()*0.5 + 0.3 });
+      }
+    }
+    seedStars();
+
+    // === Body Model ===
+    class Body {
+      constructor(x, y, vx, vy, mass, color, isBH=false) {
+        this.x = x; this.y = y;
+        this.vx = vx; this.vy = vy;
+        this.mass = mass;
+        this.color = color;
+        this.isBH = isBH;             // collapsed black hole?
+        this.radius = isBH ? BH_VIS_RADIUS : radiusFromMass(mass);
+        this.collideRadius = isBH ? BH_COLLIDE_RADIUS : this.radius;
+        this.trail = [];
+      }
+      updateTrail() {
+        this.trail.push({ x: this.x, y: this.y });
+        if (this.trail.length > TRAIL_LENGTH) this.trail.shift();
+      }
+      recomputeRadius() {
+        if (this.isBH) {
+          this.radius = BH_VIS_RADIUS;
+          this.collideRadius = BH_COLLIDE_RADIUS;
+        } else {
+          this.radius = radiusFromMass(this.mass);
+          this.collideRadius = this.radius;
+        }
+      }
+    }
+
+    // === Simulation State ===
+    let bodies = [];
+    let running = true;
+    let dragging = false, dragBody = null, dragOffset = {x:0, y:0};
+    let adding = false, addStart = null; // world coords
+    let mouse = {x:0, y:0};             // screen coords
+    let lastTimestamp = 0;
+    let hoveredBody = null;             // for edit button
+    let overEditUI = false;             // track mouse over edit UI to keep it visible
+
+    // === Utils ===
+    function screenToWorld(x, y) {
+      return {
+        x: (x - width/2) / cam.zoom + cam.x,
+        y: (y - height/2) / cam.zoom + cam.y
+      };
+    }
+    function worldToScreen(x, y) {
+      return {
+        x: (x - cam.x) * cam.zoom + width/2,
+        y: (y - cam.y) * cam.zoom + height/2
+      };
+    }
+    function randomColor() {
+      const colors = ['#ffb347','#ff6961','#77dd77','#aec6cf','#f49ac2','#cfcfc4','#b39eb5','#fffacd'];
+      return colors[Math.floor(Math.random()*colors.length)];
+    }
+    function isVisible(b) {
+      const scr = worldToScreen(b.x, b.y);
+      const r = b.radius * cam.zoom;
+      return scr.x >= -r && scr.x <= width + r && scr.y >= -r && scr.y <= height + r;
+    }
+    function largestVisibleBody() {
+      let best = null;
+      for (const b of bodies) {
+        if (isVisible(b)) {
+          if (!best || b.mass > best.mass) best = b;
+        }
+      }
+      return best;
+    }
+
+    // === Preset System (Sun + Planets + Belt) ===
+    function addPresetSystem() {
+      bodies = [];
+      const cx = cam.x, cy = cam.y;
+      // Sun
+      bodies.push(new Body(cx, cy, 0, 0, 1000, '#fffacd'));
+      // Planets
+      for (let i=0; i<5; i++) {
+        const angle = Math.random()*2*Math.PI;
+        const dist = 80 + i*60 + Math.random()*30;
+        const px = cx + Math.cos(angle)*dist;
+        const py = cy + Math.sin(angle)*dist;
+        const speed = Math.sqrt(G * bodies[0].mass / dist);
+        const vx = -Math.sin(angle)*speed;
+        const vy =  Math.cos(angle)*speed;
+        bodies.push(new Body(px, py, vx, vy, 10+Math.random()*30, randomColor()));
+      }
+      // Asteroid belt
+      for (let i=0; i<30; i++) {
+        const angle = Math.random()*2*Math.PI;
+        const dist = 250 + Math.random()*60;
+        const px = cx + Math.cos(angle)*dist;
+        const py = cy + Math.sin(angle)*dist;
+        const speed = Math.sqrt(G * bodies[0].mass / dist);
+        const vx = -Math.sin(angle)*speed * (0.95+Math.random()*0.1);
+        const vy =  Math.cos(angle)*speed * (0.95+Math.random()*0.1);
+        bodies.push(new Body(px, py, vx, vy, 1+Math.random()*3, '#aaa'));
+      }
+    }
+    addPresetSystem();
+
+    // === Physics ===
+    function step(dt) {
+      // 1) Gravity (semi-implicit Euler)
+      for (let i = 0; i < bodies.length; i++) {
+        const b1 = bodies[i];
+        let ax = 0, ay = 0;
+        for (let j = 0; j < bodies.length; j++) {
+          if (i === j) continue;
+          const b2 = bodies[j];
+          const dx = b2.x - b1.x;
+          const dy = b2.y - b1.y;
+          const distSq = dx*dx + dy*dy + EPS;
+          const dist = Math.sqrt(distSq);
+          const a = G * b2.mass / distSq;
+          ax += a * dx / dist;
+          ay += a * dy / dist;
+        }
+        b1.vx += ax * dt;
+        b1.vy += ay * dt;
+      }
+
+      // 2) Move
+      for (const b of bodies) {
+        b.x += b.vx * dt;
+        b.y += b.vy * dt;
+        b.updateTrail();
+      }
+
+      // 3) Collisions + Merging
+      resolveMerges();
+
+      // 4) Post-merge state checks (BH collapse)
+      const threshold = parseFloat(bhThresholdSlider.value);
+      for (const b of bodies) {
+        if (!b.isBH && b.mass >= threshold) {
+          b.isBH = true;          // collapse
+          b.recomputeRadius();
+          b.trail.length = 0;
+        } else if (!b.isBH) {
+          b.recomputeRadius();
+        }
+      }
+    }
+
+    function resolveMerges() {
+      const toRemove = new Set();
+      for (let i = 0; i < bodies.length; i++) {
+        const a = bodies[i];
+        if (toRemove.has(i)) continue;
+        for (let j = i + 1; j < bodies.length; j++) {
+          if (toRemove.has(j)) continue;
+          const b = bodies[j];
+          const dx = b.x - a.x;
+          const dy = b.y - a.y;
+          const dist = Math.hypot(dx, dy);
+          const radSum = a.collideRadius + b.collideRadius;
+          if (dist <= radSum) {
+            // Merge: position and velocity = mass-weighted averages
+            const m = a.mass + b.mass;
+            const x = (a.x * a.mass + b.x * b.mass) / m;
+            const y = (a.y * a.mass + b.y * b.mass) / m;
+            const vx = (a.vx * a.mass + b.vx * b.mass) / m;
+            const vy = (a.vy * a.mass + b.vy * b.mass) / m;
+
+            const dominant = a.mass >= b.mass ? a : b;
+            const merged = new Body(
+              x, y, vx, vy,
+              m,
+              dominant.color,
+              a.isBH || b.isBH
+            );
+
+            // Continue dragging the merged body if user was dragging either
+            if (dragging && (dragBody === a || dragBody === b)) {
+              dragBody = merged; // keep cursor control
+            }
+
+            // Carry trail
+            merged.trail = (dominant.trail || []).slice(-Math.floor(TRAIL_LENGTH/2));
+
+            bodies[i] = merged;
+            toRemove.add(j);
+          }
+        }
+      }
+      if (toRemove.size) {
+        const kept = [];
+        for (let k = 0; k < bodies.length; k++) if (!toRemove.has(k)) kept.push(bodies[k]);
+        bodies = kept;
+      }
+    }
+
+    // === Drawing ===
+    function draw() {
+      // Background
+      ctx.fillStyle = '#111';
+      ctx.fillRect(0, 0, width, height);
+
+      // Stars (screen-space, parallax with camera, togglable)
+      if (showStarsCb.checked) {
+        const parallax = 0.2; // lower = deeper background
+        const offX = (cam.x * parallax) % width;
+        const offY = (cam.y * parallax) % height;
+        ctx.globalAlpha = 1;
+        for (const s of stars) {
+          let sx = s.x - offX; if (sx < 0) sx += width; if (sx >= width) sx -= width;
+          let sy = s.y - offY; if (sy < 0) sy += height; if (sy >= height) sy -= height;
+          ctx.beginPath();
+          ctx.arc(sx, sy, s.r, 0, Math.PI*2);
+          ctx.fillStyle = 'rgba(255,255,255,' + s.a + ')';
+          ctx.fill();
+        }
+      }
+
+      // Trails
+      for (const b of bodies) {
+        if (b.trail.length > 1) {
+          ctx.beginPath();
+          for (let i = 0; i < b.trail.length; i++) {
+            const p = worldToScreen(b.trail[i].x, b.trail[i].y);
+            if (i === 0) ctx.moveTo(p.x, p.y); else ctx.lineTo(p.x, p.y);
+          }
+          ctx.strokeStyle = b.color;
+          ctx.globalAlpha = 0.3;
+          ctx.lineWidth = 2;
+          ctx.stroke();
+          ctx.globalAlpha = 1;
+        }
+      }
+
+      // Bodies
+      for (const b of bodies) {
+        const scr = worldToScreen(b.x, b.y);
+        const screenR = b.radius * cam.zoom;
+
+        if (b.isBH) {
+          // Subtle accretion glow
+          ctx.beginPath();
+          ctx.arc(scr.x, scr.y, (b.radius+8) * cam.zoom, 0, Math.PI*2);
+          ctx.fillStyle = 'rgba(255,255,255,0.06)';
+          ctx.fill();
+
+          // Event horizon (dark disk)
+          ctx.beginPath();
+          ctx.arc(scr.x, scr.y, screenR, 0, Math.PI*2);
+          ctx.fillStyle = '#000';
+          ctx.shadowColor = b.color;
+          ctx.shadowBlur = 12 * cam.zoom;
+          ctx.fill();
+          ctx.shadowBlur = 0;
+          ctx.lineWidth = 1;
+          ctx.strokeStyle = '#222';
+          ctx.stroke();
+        } else {
+          // Normal body
+          ctx.beginPath();
+          ctx.arc(scr.x, scr.y, screenR, 0, Math.PI*2);
+          ctx.fillStyle = b.color;
+          ctx.shadowColor = b.color;
+          ctx.shadowBlur = 10 * cam.zoom;
+          ctx.fill();
+          ctx.shadowBlur = 0;
+          ctx.lineWidth = 2;
+          ctx.strokeStyle = '#222';
+          ctx.stroke();
+        }
+
+        // Highlight overlay for visibility at extreme zoom out
+        if (highlightCb.checked) {
+          const minR = HIGHLIGHT_MIN_PX;
+          if (screenR < minR) {
+            ctx.beginPath();
+            ctx.arc(scr.x, scr.y, minR, 0, Math.PI*2);
+            ctx.strokeStyle = '#fff';
+            ctx.lineWidth = 1;
+            ctx.globalAlpha = 0.85;
+            ctx.stroke();
+            ctx.globalAlpha = 1;
+          }
+        }
+      }
+
+      // Add preview (ghost) when placing a body
+      if (adding && addStart) {
+        const scr0 = worldToScreen(addStart.x, addStart.y);
+        const mass = parseFloat(massSlider.value);
+        const previewR = radiusFromMass(mass) * cam.zoom;
+
+        // Ghost body circle (based on mass)
+        ctx.beginPath();
+        ctx.arc(scr0.x, scr0.y, previewR, 0, Math.PI*2);
+        ctx.strokeStyle = '#fff';
+        ctx.setLineDash([4,4]);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        // Velocity arrow (length represents speed unless Create orbit)
+        const dx = mouse.x - scr0.x;
+        const dy = mouse.y - scr0.y;
+        const len = Math.min(Math.hypot(dx, dy), PREVIEW_MAX_ARROW);
+        const ux = len ? dx / Math.hypot(dx, dy) : 0;
+        const uy = len ? dy / Math.hypot(dx, dy) : 0;
+        ctx.beginPath();
+        ctx.moveTo(scr0.x, scr0.y);
+        ctx.lineTo(scr0.x + ux*len, scr0.y + uy*len);
+        ctx.strokeStyle = createOrbitCb.checked ? '#ff0' : '#0ff';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+
+        // Speed or orbit readout
+        ctx.fillStyle = createOrbitCb.checked ? '#ff0' : '#0ff';
+        if (createOrbitCb.checked) {
+          const target = largestVisibleBody();
+          if (target) {
+            const dxw = addStart.x - target.x;
+            const dyw = addStart.y - target.y;
+            const r = Math.hypot(dxw, dyw);
+            const v = r > 1e-6 ? Math.sqrt(G * target.mass / r) : 0;
+            ctx.fillText(`orbit: v=${v.toFixed(2)} around mass ${target.mass.toFixed(1)}`, scr0.x + 8, scr0.y - 8);
+          } else {
+            ctx.fillText(`orbit: no visible primary`, scr0.x + 8, scr0.y - 8);
+          }
+        } else {
+          const speed = len * SPEED_PER_PIXEL;
+          ctx.fillText(`speed: ${speed.toFixed(2)}`, scr0.x + 8, scr0.y - 8);
+        }
+      }
+
+      // Center crosshair when starfield is off
+      if (!showStarsCb.checked) {
+        const cx = width/2, cy = height/2;
+        const L = 10; // px
+        ctx.beginPath();
+        ctx.moveTo(cx - L, cy); ctx.lineTo(cx + L, cy);
+        ctx.moveTo(cx, cy - L); ctx.lineTo(cx, cy + L);
+        ctx.strokeStyle = '#666';
+        ctx.lineWidth = 1;
+        ctx.stroke();
+      }
+    }
+
+    // === Main Loop ===
+    function loop(ts) {
+      const dt = running ? Math.min((ts - lastTimestamp) / 16, 2) : 0; // ~60 FPS baseline units
+      lastTimestamp = ts;
+      if (running) step(dt);
+      draw();
+      requestAnimationFrame(loop);
+    }
+    requestAnimationFrame(loop);
+
+    // === Mouse Interaction ===
+    canvas.addEventListener('mousedown', (e) => {
+      if (e.button !== 0) return; // only left-click for add/drag
+      const pos = screenToWorld(e.offsetX, e.offsetY);
+      // Drag existing body?
+      for (const b of bodies) {
+        const dx = pos.x - b.x, dy = pos.y - b.y;
+        const pickR = Math.max(b.radius, PICK_MIN_PX / cam.zoom);
+        if (Math.hypot(dx, dy) < pickR) {
+          dragging = true; dragBody = b;
+          dragOffset.x = b.x - pos.x; dragOffset.y = b.y - pos.y;
+          hideEditUI();
+          return;
+        }
+      }
+      // Else start adding new body
+      adding = true; addStart = pos;
+      hideEditUI();
+    });
+
+    window.addEventListener('mousemove', (e) => {
+      // track mouse globally so hovering over edit UI doesn't break things
+      const rect = canvas.getBoundingClientRect();
+      mouse.x = e.clientX - rect.left; mouse.y = e.clientY - rect.top;
+      if (dragging && dragBody) {
+        const pos = screenToWorld(mouse.x, mouse.y);
+        dragBody.x = pos.x + dragOffset.x;
+        dragBody.y = pos.y + dragOffset.y;
+        dragBody.vx = 0; dragBody.vy = 0; // picking it up kills momentum
+      }
+    });
+
+    canvas.addEventListener('mouseup', (e) => {
+      if (e.button !== 0) return; // only left-click release matters
+      if (dragging) { dragging = false; dragBody = null; return; }
+      if (adding && addStart) {
+        const end = screenToWorld(mouse.x, mouse.y);
+        const dx = end.x - addStart.x, dy = end.y - addStart.y;
+        const dist = Math.hypot(dx, dy);
+        const startScr = worldToScreen(addStart.x, addStart.y);
+        const arrowPx = Math.hypot(mouse.x - startScr.x, mouse.y - startScr.y);
+
+        let vx = 0, vy = 0;
+        if (createOrbitCb.checked) {
+          const primary = largestVisibleBody();
+          if (primary) {
+            const rx = addStart.x - primary.x;
+            const ry = addStart.y - primary.y;
+            const r = Math.hypot(rx, ry);
+            if (r > 1e-6) {
+              const vmag = Math.sqrt(G * primary.mass / r);
+              // Tangential unit (CCW): (-ry/r, rx/r)
+              let tx = -ry / r, ty = rx / r;
+              // Choose direction from the drawn arrow (world space)
+              const dot = (dx * tx + dy * ty);
+              const sgn = dot >= 0 ? 1 : -1;
+              vx = sgn * vmag * tx;
+              vy = sgn * vmag * ty;
+            }
+          } else {
+            // Fallback to manual speed if no visible primary
+            const speed = arrowPx * SPEED_PER_PIXEL;
+            const ux = dist ? dx / dist : 0;
+            const uy = dist ? dy / dist : 0;
+            vx = ux * speed; vy = uy * speed;
+          }
+        } else {
+          // Manual speed from arrow length
+          const speed = arrowPx * SPEED_PER_PIXEL;
+          const ux = dist ? dx / dist : 0;
+          const uy = dist ? dy / dist : 0;
+          vx = ux * speed; vy = uy * speed;
+        }
+
+        const mass = parseFloat(massSlider.value);
+        const body = new Body(addStart.x, addStart.y, vx, vy, mass, randomColor());
+        bodies.push(body);
+        adding = false; addStart = null;
+      }
+    });
+
+    // Pan & Zoom (right mouse)
+    let panning = false, panStart = {x:0, y:0}, camStart = {x:0, y:0};
+    canvas.addEventListener('contextmenu', e => e.preventDefault());
+    canvas.addEventListener('mousedown', e => {
+      if (e.button === 2) {
+        panning = true;
+        panStart.x = e.clientX; panStart.y = e.clientY;
+        camStart.x = cam.x; camStart.y = cam.y;
+        hideEditUI();
+      }
+    });
+    window.addEventListener('mousemove', e => {
+      if (panning) {
+        cam.x = camStart.x - (e.clientX - panStart.x)/cam.zoom;
+        cam.y = camStart.y - (e.clientY - panStart.y)/cam.zoom;
+      }
+    });
+    window.addEventListener('mouseup', (e) => { if (e.button === 2) panning = false; });
+    canvas.addEventListener('wheel', e => {
+      const factor = e.deltaY < 0 ? 1.1 : 0.9;
+      const mouseWorld = screenToWorld(e.offsetX, e.offsetY);
+      cam.zoom *= factor;
+      // Zoom to cursor
+      cam.x = mouseWorld.x - (e.offsetX - width/2)/cam.zoom;
+      cam.y = mouseWorld.y - (e.offsetY - height/2)/cam.zoom;
+    });
+
+    // === UI Controls ===
+    playPauseBtn.onclick = () => {
+      running = !running;
+      playPauseBtn.textContent = running ? 'Pause' : 'Play';
+      if (running) hideEditUI();
+    };
+    resetBtn.onclick = addPresetSystem;
+    recenterBtn.onclick = () => { cam.x = initialCam.x; cam.y = initialCam.y; cam.zoom = initialCam.zoom; };
+
+    // === Inline Edit Logic ===
+    function hideEditUI() {
+      editBtn.style.display = 'none';
+      editPanel.style.display = 'none';
+      if (!overEditUI) hoveredBody = null;
+    }
+
+    // Keep UI visible when hovering the button/panel, so we can move cursor into it
+    function setOverEdit(val){ overEditUI = val; }
+    editBtn.addEventListener('mouseenter', () => setOverEdit(true));
+    editBtn.addEventListener('mouseleave', () => setOverEdit(false));
+    editPanel.addEventListener('mouseenter', () => setOverEdit(true));
+    editPanel.addEventListener('mouseleave', () => setOverEdit(false));
+
+    editBtn.addEventListener('click', () => {
+      if (!hoveredBody) return;
+      // position panel under the button
+      editPanel.style.left = editBtn.style.left;
+      editPanel.style.top = `calc(${editBtn.style.top} + 12px)`;
+      editPanel.style.display = 'block';
+      editMassInput.value = String(hoveredBody.mass);
+    });
+
+    saveMassBtn.addEventListener('click', () => {
+      if (!hoveredBody) return;
+      const m = parseFloat(editMassInput.value);
+      if (!isFinite(m) || m <= 0) { alert('Enter a positive number for mass.'); return; }
+      hoveredBody.mass = m;
+      const threshold = parseFloat(bhThresholdSlider.value);
+      hoveredBody.isBH = hoveredBody.mass >= threshold;
+      hoveredBody.recomputeRadius();
+      editPanel.style.display = 'none';
+    });
+
+    deleteObjBtn.addEventListener('click', () => {
+      if (!hoveredBody) return;
+      const idx = bodies.indexOf(hoveredBody);
+      if (idx >= 0) bodies.splice(idx, 1);
+      hideEditUI();
+    });
+
+    // === Info HUD & hover detection ===
+    setInterval(() => {
+      // Hover detection in world space with min pick radius in pixels
+      const pos = screenToWorld(mouse.x, mouse.y);
+      let found = null;
+      for (const b of bodies) {
+        const dx = pos.x - b.x, dy = pos.y - b.y;
+        const pickR = Math.max(b.radius, PICK_MIN_PX / cam.zoom);
+        if (Math.hypot(dx, dy) < pickR) { found = b; break; }
+      }
+
+      if (!running) {
+        if (found) {
+          hoveredBody = found;
+          const scr = worldToScreen(found.x, found.y);
+          editBtn.style.left = (scr.x + 14) + 'px';
+          editBtn.style.top = (scr.y - 14) + 'px';
+          editBtn.style.display = 'block';
+        } else if (overEditUI && hoveredBody) {
+          // keep button/panel visible at last position while cursor is over them
+          editBtn.style.display = 'block';
+        } else {
+          editBtn.style.display = 'none';
+          editPanel.style.display = 'none';
+          hoveredBody = null;
+        }
+      }
+
+      // Info HUD text
+      if (found) {
+        const v = Math.hypot(found.vx, found.vy);
+        infoSpan.innerHTML = `${found.isBH ? 'BH' : 'Body'} — Mass: ${found.mass.toFixed(1)}, Radius: ${found.radius.toFixed(2)}, v: ${v.toFixed(2)}`;
+      } else if (adding && addStart) {
+        const startScr = worldToScreen(addStart.x, addStart.y);
+        const lenPx = Math.hypot(mouse.x - startScr.x, mouse.y - startScr.y);
+        if (createOrbitCb.checked) {
+          const target = largestVisibleBody();
+          if (target) {
+            const dxw = addStart.x - target.x;
+            const dyw = addStart.y - target.y;
+            const r = Math.hypot(dxw, dyw);
+            const v = r > 1e-6 ? Math.sqrt(G * target.mass / r) : 0;
+            infoSpan.textContent = `Placing (orbit) — Mass: ${parseFloat(massSlider.value).toFixed(1)}, v: ${v.toFixed(2)} around visible mass ${target.mass.toFixed(1)}`;
+          } else {
+            infoSpan.textContent = `Placing (orbit) — no visible primary`;
+          }
+        } else {
+          const speed = lenPx * SPEED_PER_PIXEL;
+          infoSpan.textContent = `Placing — Mass: ${parseFloat(massSlider.value).toFixed(1)}, speed: ${speed.toFixed(2)}`;
+        }
+      } else {
+        infoSpan.textContent = '';
+      }
+    }, 100);
+
+    // === Resize ===
+    window.addEventListener('resize', () => {
+      width = window.innerWidth; height = window.innerHeight;
+      canvas.width = width; canvas.height = height;
+      seedStars();
+    });
+  </script>
+</body>
+</html>
